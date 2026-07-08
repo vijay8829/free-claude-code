@@ -3,21 +3,29 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="description" content="Free Claude Code Administration Panel" />
+    <meta name="author" content="Free Claude Code Team" />
     <title>Free Claude Code Admin</title>
     <link rel="icon" href="data:," />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
     <link rel="stylesheet" href="/admin/assets/admin.css" />
   </head>
   <body>
     <div class="app-shell">
       <aside class="sidebar">
         <div class="brand">
-          <div class="brand-mark">FC</div>
+          <div class="brand-mark">
+            <svg width="24" height="24" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+              <path d="M12 2L2 7l10 5 10-5-10-5zM2 17l10 5 10-5M2 12l10 5 10-5" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+            </svg>
+          </div>
           <div>
             <h1>Free Claude Code</h1>
-            <p>Server Control</p>
+            <p>Server Control Panel</p>
           </div>
         </div>
-        <nav id="sectionNav" class="section-nav" aria-label="Admin views"></nav>
+        <nav id="sectionNav" class="section-nav" aria-label="Main navigation"></nav>
       </aside>
 
       <main class="main">
@@ -28,34 +36,31 @@
         </header>
 
         <div id="adminViews" class="admin-views">
+          <!-- Providers View -->
           <section id="view-providers" class="admin-view active" data-view="providers">
-            <section class="provider-strip" aria-label="Provider status">
+            <section class="provider-strip" aria-label="Provider status overview">
               <div class="strip-header">
-                <h3>Providers</h3>
+                <h3>Provider Status</h3>
+                <button id="refreshStatus" class="secondary-button" type="button" aria-label="Refresh provider status">
+                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+                    <path d="M4 4h5l3 3L11 3l3 3h5a9 9 0 11-18 0z" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+                  </svg>
+                  Refresh
+                </button>
               </div>
               <div id="providerGrid" class="provider-grid"></div>
             </section>
-            <div
-              id="providersSections"
-              class="form-sections"
-              aria-label="Provider configuration"
-            ></div>
+            <div id="providersSections" class="form-sections" aria-label="Provider configuration"></div>
           </section>
 
-          <section id="view-model_config" class="admin-view" data-view="model_config" hidden>
-            <div
-              id="modelConfigSections"
-              class="form-sections"
-              aria-label="Model configuration"
-            ></div>
+          <!-- Model Configuration View -->
+          <section id="view-model_config" class="admin-view" data-view="model_config">
+            <div id="modelConfigSections" class="form-sections" aria-label="Model configuration"></div>
           </section>
 
-          <section id="view-messaging" class="admin-view" data-view="messaging" hidden>
-            <div
-              id="messagingSections"
-              class="form-sections"
-              aria-label="Messaging configuration"
-            ></div>
+          <!-- Messaging View -->
+          <section id="view-messaging" class="admin-view" data-view="messaging">
+            <div id="messagingSections" class="form-sections" aria-label="Messaging configuration"></div>
           </section>
         </div>
       </main>
@@ -65,10 +70,10 @@
           <strong id="dirtyState">No changes</strong>
           <span id="configPath"></span>
         </div>
-        <div id="messageArea" class="message-area"></div>
+        <div id="messageArea" class="message-area" aria-live="polite"></div>
         <div class="action-buttons">
-          <button id="validateButton" class="secondary-button" type="button">Validate</button>
-          <button id="applyButton" class="primary-button" type="button" disabled>Apply</button>
+          <button id="validateButton" class="secondary-button" type="button">Validate Configuration</button>
+          <button id="applyButton" class="primary-button" type="button" disabled>Apply Changes</button>
         </div>
       </footer>
     </div>

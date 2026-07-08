@@ -4,6 +4,8 @@ const state = {
   localStatus: new Map(),
   modelOptions: [],
   activeView: "providers",
+  isLoading: false,
+  pendingChanges: new Set(),
 };
 
 const MASKED_SECRET = "********";
@@ -65,29 +67,54 @@ function statusClass(status) {
 }
 
 async function api(path, options = {}) {
-  const response = await fetch(path, {
-    headers: { "Content-Type": "application/json", ...(options.headers || {}) },
-    ...options,
-  });
-  if (!response.ok) {
-    throw new Error(`${response.status} ${response.statusText}`);
+  setLoading(true);
+  try {
+    const response = await fetch(path, {
+      headers: { "Content-Type": "application/json", ...(options.headers || {}) },
+      ...options,
+    });
+    if (!response.ok) {
+      throw new Error(`${response.status} ${response.statusText}`);
+    }
+    return await response.json();
+  } finally {
+    setLoading(false);
   }
-  return response.json();
+}
+
+function setLoading(isLoading) {
+  state.isLoading = isLoading;
+  const applyButton = byId("applyButton");
+  if (applyButton) {
+    applyButton.disabled = isLoading || state.pendingChanges.size === 0;
+    if (isLoading) {
+      applyButton.classList.add("loading");
+      applyButton.innerHTML = '<span>Applying...</span>';
+    } else {
+      applyButton.classList.remove("loading");
+      applyButton.innerHTML = '<span>Apply Changes</span>';
+    }
+  }
 }
 
 async function load() {
-  showMessage("Loading admin config");
-  const config = await api("/admin/api/config");
-  state.config = config;
-  state.fields = new Map(config.fields.map((field) => [field.key, field]));
-  renderNav();
-  renderProviders(config.provider_status);
-  renderSections(config.sections, config.fields);
-  byId("configPath").textContent = config.paths.managed;
-  await validate(false);
-  await refreshLocalStatus();
-  updateDirtyState();
-  showMessage("");
+  showMessage("Loading admin configuration...");
+  try {
+    const config = await api("/admin/api/config");
+    state.config = config;
+    state.fields = new Map(config.fields.map((field) => [field.key, field]));
+    renderNav();
+    renderProviders(config.provider_status);
+    renderSections(config.sections, config.fields);
+    byId("configPath").textContent = config.paths.managed;
+    await validate(false);
+    await refreshLocalStatus();
+    updateDirtyState();
+    showMessage("");
+  } catch (error) {
+    showMessage(`Failed to load configuration: ${error.message}`, "error");
+    console.error("Failed to load config:", error);
+  }
 }
 
 function renderNav() {
@@ -140,34 +167,68 @@ function setActiveView(viewId, { scroll = false } = {}) {
 function renderProviders(providerStatus) {
   const grid = byId("providerGrid");
   grid.innerHTML = "";
+
   providerStatus.forEach((provider) => {
     const card = document.createElement("article");
     card.className = "provider-card";
     card.dataset.provider = provider.provider_id;
+    card.dataset.status = provider.status;
 
-    const title = document.createElement("div");
+    // Status indicator
+    const statusIndicator = document.createElement("div");
+    statusIndicator.className = "status-indicator";
+    statusIndicator.style.backgroundColor =
+      provider.status === "configured" ? "var(--ok)" :
+      provider.status === "pending" ? "var(--warn)" :
+      provider.status === "error" ? "var(--error)" : "var(--muted)";
+
+    const titleContainer = document.createElement("div");
+    titleContainer.className = "provider-title-container";
+    titleContainer.style.display = "flex";
+    titleContainer.style.alignItems = "center";
+    titleContainer.style.gap = "12px";
+
+    const title = document.createElement("strong");
     title.className = "provider-title";
-    title.innerHTML = `<strong>${provider.display_name || provider.provider_id}</strong>`;
+    title.textContent = provider.display_name || provider.provider_id;
 
     const pill = document.createElement("span");
     pill.className = `status-pill ${statusClass(provider.status)}`;
-    pill.textContent = provider.label;
-    title.appendChild(pill);
+    pill.textContent = provider.label || provider.status;
+
+    titleContainer.append(title, pill);
 
     const meta = document.createElement("div");
     meta.className = "provider-meta";
     meta.textContent =
       provider.kind === "local"
         ? provider.base_url || "No local URL configured"
-        : provider.credential_env;
+        : provider.credential_env || "No credentials configured";
+
+    const buttonContainer = document.createElement("div");
+    buttonContainer.className = "provider-button-container";
+    buttonContainer.style.display = "flex";
+    buttonContainer.style.gap = "8px";
 
     const button = document.createElement("button");
     button.type = "button";
     button.className = "test-button";
-    button.textContent = provider.kind === "local" ? "Test" : "Refresh models";
-    button.addEventListener("click", () => testProvider(provider.provider_id, button));
+    button.textContent = provider.kind === "local" ? "Test Connection" : "Refresh Models";
+    button.dataset.providerId = provider.provider_id;
+    button.addEventListener("click", (e) => {
+      e.stopPropagation();
+      testProvider(provider.provider_id, button);
+    });
 
-    card.append(title, meta, button);
+    // Make entire card clickable for more details (if implemented)
+    card.style.cursor = "pointer";
+    card.addEventListener("click", () => {
+      // Could show more details in a modal or panel
+      showMessage(`Selected provider: ${provider.display_name || provider.provider_id}`, "info");
+    });
+
+    buttonContainer.appendChild(button);
+    card.append(statusIndicator, titleContainer, meta, buttonContainer);
     grid.appendChild(card);
   });
 }
@@ -175,11 +236,37 @@ function renderProviders(providerStatus) {
 function updateProviderCard(providerId, status, label, metaText) {
   const card = document.querySelector(`[data-provider="${providerId}"]`);
   if (!card) return;
+
+  const indicator = card.querySelector(".status-indicator");
+  if (indicator) {
+    indicator.style.backgroundColor =
+      status === "configured" ? "var(--ok)" :
+      status === "pending" ? "var(--warn)" :
+      status === "error" ? "var(--error)" : "var(--muted)";
+  }
+
   const pill = card.querySelector(".status-pill");
-  pill.className = `status-pill ${statusClass(status)}`;
-  pill.textContent = label;
-  if (metaText) {
-    card.querySelector(".provider-meta").textContent = metaText;
+  if (pill) {
+    pill.className = `status-pill ${statusClass(status)}`;
+    pill.textContent = label || status;
+  }
+
+  const meta = card.querySelector(".provider-meta");
+  if (meta && metaText !== undefined) {
+    meta.textContent = metaText;
+  }
+
+  // Update button text based on status
+  const button = card.querySelector(".test-button");
+  if (button) {
+    if (status === "configured") {
+      button.textContent = "Test Connection";
+    } else if (status === "pending") {
+      button.textContent = "Checking...";
+      button.disabled = true;
+    } else {
+      button.textContent = "Configure";
+    }
   }
 }
 
@@ -220,16 +307,32 @@ function renderSections(sections, fields) {
       sectionEl.appendChild(grid);
 
       if (sectionFields.some((field) => field.advanced)) {
+        const toggleContainer = document.createElement("div");
+        toggleContainer.style.textAlign = "center";
+        toggleContainer.style.marginTop = "16px";
+
         const toggle = document.createElement("button");
         toggle.type = "button";
-        toggle.className = "ghost-button advanced-toggle";
+        toggle.className = "advanced-toggle";
         toggle.textContent = "Show advanced";
         toggle.addEventListener("click", () => {
           const showing = sectionEl.classList.toggle("show-advanced");
           toggle.textContent = showing ? "Hide advanced" : "Show advanced";
+
+          // Animate the reveal
+          if (showing) {
+            sectionEl.style.maxHeight = sectionEl.scrollHeight + "px";
+          } else {
+            sectionEl.style.maxHeight = null;
+          }
         });
-        sectionEl.appendChild(toggle);
+        toggleContainer.appendChild(toggle);
+        sectionEl.appendChild(toggleContainer);
       }
+
+      // Add smooth transition for expanding/collapsing
+      sectionEl.style.overflow = "hidden";
+      sectionEl.style.transition = "max-height 0.3s ease";
 
       container.appendChild(sectionEl);
     });
@@ -243,6 +346,8 @@ function renderField(field) {
 
   const label = document.createElement("label");
   label.htmlFor = `field-${field.key}`;
+  label.className = "field-label";
+
   const labelText = document.createElement("span");
   labelText.textContent = field.label;
   label.appendChild(labelText);
@@ -262,8 +367,34 @@ function renderField(field) {
   input.dataset.secret = field.secret ? "true" : "false";
   input.dataset.configured = field.configured ? "true" : "false";
   input.disabled = field.locked;
-  input.addEventListener("input", updateDirtyState);
+  input.addEventListener("input", (e) => {
+    updateDirtyState();
+    // Provide immediate validation
+
+
+    }
+
+    // Update config if value changed
+    const newValue = input.value;
+    const originalValue = input.dataset.original;
+    if (newValue !== originalValue) {
+      state.pendingChanges.add(field.key);
+    } else {
+      state.pendingChanges.delete(field.key);
+    }
+    updateApplyButtonState();
+  });
+
   input.addEventListener("change", updateDirtyState);
+
+  // Add focus/blur effects for better UX
+  input.addEventListener("focus", () => {
+    input.parentElement.style.boxShadow = "0 0 0 3px rgba(59, 130, 246, 0.2)";
+  });
+
+  input.addEventListener("blur", () => {
+    input.parentElement.style.boxHover = "";
+  });
 
   wrapper.append(label, input);
   if (field.description) {
@@ -290,14 +421,24 @@ function inputForField(field) {
       ["", "Inherit"],
       ["true", "Enabled"],
       ["false", "Disabled"],
-    ].forEach(([value, label]) => select.appendChild(option(value, label)));
+    ].forEach(([value, label]) => {
+      const option = document.createElement("option");
+      option.value = value;
+      option.textContent = label;
+      select.appendChild(option);
+    });
     select.value = field.value || "";
     return select;
   }
 
   if (field.type === "select") {
     const select = document.createElement("select");
-    field.options.forEach((value) => select.appendChild(option(value, value)));
+    field.options.forEach((value) => {
+      const option = document.createElement("option");
+      option.value = value;
+      option.textContent = value;
+      select.appendChild(option);
+    });
     select.value = field.value || field.options[0] || "";
     return select;
   }
@@ -305,6 +446,8 @@ function inputForField(field) {
   if (field.type === "textarea") {
     const textarea = document.createElement("textarea");
     textarea.value = field.value || "";
+    textarea.rows = Math.min(4, Math.max(2, (field.value || "").length / 50 + 1));
+    textarea.style.resize = "vertical";
     return textarea;
   }
 
@@ -317,159 +460,248 @@ function inputForField(field) {
       : "Not configured";
     input.value = "";
     input.autocomplete = "off";
+
+    // Add toggle visibility button for password fields
+    const wrapper = document.createElement("div");
+    wrapper.style.position = "relative";
+    wrapper.style.display = "flex";
+    wrapper.style.alignItems = "center";
+
+    const toggleButton = document.createElement("button");
+    toggleButton.type = "button";
+    toggleButton.className = "toggle-password";
+    toggleButton.innerHTML = '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg"><path d="M12 4.5c2.21 0 4.17.85 5.65 2.26l2.23-2.23C21.09 4.81 18.77 3 15.01 3C10.08 3 6.07 5 3 8.5c1.41.35 2.83.88 4.13 1.6l2.37-2.37C9.15 7.03 11.15 5.5 13.5 5.5c2.21 0 4.17.85 5.65 2.26l1.5-1.5C18.76 4.81 16.37 3 13.01 3C9.24 3 6.15 4.84 4.27 6.72l1.5 1.5C5.77 8.81 7.77 10 7.77 12c0 3.87 3.13 7 7 7s7-3.13 7-7c0-2.16-.87-4.16-2.29-5.64l-1.48 1.48zM12 15.5c-3.03 0-5.5-2.47-5.5-5.5s2.47-5.5 5.5-5.5 5.5 2.47 5.5 5.5-2.47 5.5-5.5 5.5z" fill="currentColor"/></svg>';
+    toggleButton.style.position = "absolute";
+    toggleButton.style.right = "12px";
+    toggleButton.style.background = "none";
+    toggleButton.style.border = "none";
+    toggleButton.style.color = "var(--muted)";
+    toggleButton.style.cursor = "pointer";
+    toggleButton.style.padding = "4px";
+    toggleButton.style.borderRadius = "50%";
+    toggleButton.style.width = "28px";
+    toggleButton.style.height = "28px";
+    toggleButton.style.display = "flex";
+    toggleButton.style.alignItems = "center";
+    toggleButton.style.justifyContent = "center";
+
+    toggleButton.addEventListener("click", (e) => {
+      e.stopPropagation();
+      if (input.type === "password") {
+        input.type = "text";
+        toggleButton.innerHTML = '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg"><path d="M12 4.5c2.21 0 4.17.85 5.65 2.26l2.23-2.23C21.09 4.81 18.77 3 15.01 3C10.08 3 6.07 5 3 8.5c1.41.35 2.83.88 4.13 1.6l2.37-2.37C9.15 7.03 11.15 5.5 13.5 5.5c2.21 0 4.17.85 5.65 2.26l1.5-1.5C18.76 4.81 16.37 3 13.01 3C9.24 3 6.15 4.84 4.27 6.72l1.5 1.5C5.77 8.81 7.77 10 7.77 12c0 3.87 3.13 7 7 7s7-3.13 7-7c0-2.16-.87-4.16-2.29-5.64l-1.48 1.48zM12 15.5c-3.03 0-5.5-2.47-5.5-5.5s2.47-5.5 5.5-5.5 5.5 2.47 5.5 5.5-2.47 5.5-5.5 5.5zM12 12c-1.1 0-2 .9-2 2s.9 2 2 2 2-.9 2-2-.9-2-2-2z" fill="currentColor"/></svg>';
+      } else {
+        input.type = "password";
+        toggleButton.innerHTML = '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg"><path d="M12 4.5c2.21 0 4.17.85 5.65 2.26l2.23-2.23C21.09 4.81 18.77 3 15.01 3C10.08 3 6.07 5 3 8.5c1.41.35 2.83.88 4.13 1.6l2.37-2.37C9.15 7.03 11.15 5.5 13.5 5.5c2.21 0 4.17.85 5.65 2.26l1.5-1.5C18.76 4.81 16.37 3 13.01 3C9.24 3 6.15 4.84 4.27 6.72l1.5 1.5C5.77 8.81 7.77 10 7.77 12c0 3.87 3.13 7 7 7s7-3.13 7-7c0-2.16-.87-4.16-2.29-5.64l-1.48 1.48zM12 15.5c-3.03 0-5.5-2.47-5.5-5.5s2.47-5.5 5.5-5.5 5.5 2.47 5.5 5.5-2.47 5.5-5.5 5.5zM12 12c-1.1 0-2 .9-2 2s.9 2 2 2 2-.9 2-2-.9-2-2-2z" fill="currentColor"/></svg>';
+      }
+    });
+
+    wrapper.appendChild(input);
+    wrapper.appendChild(toggleButton);
+    return wrapper;
   } else {
-    input.value = field.value || "";
+    input.placeholder = field.placeholder || "";
   }
-  if (field.key.startsWith("MODEL")) {
-    input.setAttribute("list", "model-options");
-  }
+
   return input;
 }
 
-function option(value, label) {
-  const optionEl = document.createElement("option");
-  optionEl.value = value;
-  optionEl.textContent = label;
-  return optionEl;
-}
+async function testProvider(providerId, button) {
+  const originalText = button.textContent;
+  button.disabled = true;
+  button.innerHTML = '<span>Testing...</span><span class="spinner"></span>';
 
-function readFieldValue(input) {
-  if (input.type === "checkbox") return input.checked ? "true" : "false";
-  if (input.dataset.secret === "true" && input.dataset.configured === "true") {
-    return input.value ? input.value : MASKED_SECRET;
-  }
-  return input.value;
-}
-
-function changedValues() {
-  const values = {};
-  document.querySelectorAll("[data-key]").forEach((input) => {
-    if (input.disabled || !input.matches("input, select, textarea")) return;
-    const value = readFieldValue(input);
-    if (value !== input.dataset.original) {
-      values[input.dataset.key] = value;
+  try {
+    const result = await api(`/admin/api/test/${providerId}`, { method: "POST" });
+    if (result.status === "success") {
+      updateProviderCard(providerId, "configured", "Configured", result.message || "");
+      showMessage(`Provider "${providerId}" is configured correctly`, "ok");
+    } else {
+      updateProviderCard(providerId, "error", "Error", result.message || "Configuration error");
+      showMessage(`Provider "${providerId}" configuration error: ${result.message}`, "error");
     }
-  });
-  return values;
+  } catch (error) {
+    updateProviderCard(providerId, "error", "Error", error.message);
+    showMessage(`Failed to test provider "${providerId}": ${error.message}`, "error");
+  } finally {
+    button.disabled = false;
+    button.textContent = originalText;
+  }
+}
+
+async function validate(showMessage = true) {
+  if (showMessage) showMessage("Validating configuration...");
+  try {
+    const result = await api("/admin/api/validate", { method: "POST" });
+    updateDirtyState();
+    if (showMessage) {
+      if (result.valid) {
+        showMessage("Configuration is valid", "ok");
+      } else {
+        showMessage(`Validation failed: ${result.errors.join(", ")}`, "error");
+      }
+    }
+    return result.valid;
+  } catch (error) {
+    if (showMessage) showMessage(`Validation error: ${error.message}`, "error");
+    return false;
+  }
+}
+
+async function applyChanges() {
+  if (!confirm("Are you sure you want to apply these changes? This may restart services.")) {
+    return;
+  }
+
+  setLoading(true);
+  try {
+    const changes = Array.from(state.pendingChanges).map(key => {
+      const field = state.fields.get(key);
+      const input = document.getElementById(`field-${key}`);
+      let value;
+
+      if (field.type === "boolean") {
+        value = input.checked ? "true" : "false";
+      } else if (field.type === "tri_boolean") {
+        value = input.value;
+      } else if (field.type === "textarea") {
+        value = input.value;
+      } else if (field.type === "secret" && !input.value) {
+        // Don't send empty secret fields
+        return null;
+      } else {
+        value = input.value;
+      }
+
+      return { key, value };
+    }).filter(Boolean);
+
+    const result = await api("/admin/api/apply", {
+      method: "POST",
+      body: JSON.stringify({ changes })
+    });
+
+    if (result.success) {
+      showMessage("Configuration applied successfully!", "ok");
+      state.pendingChanges.clear();
+      updateApplyButtonState();
+      // Reload to reflect changes
+      setTimeout(() => load(), 1500);
+    } else {
+      showMessage(`Failed to apply changes: result.error || "Unknown error"`, "error");
+    }
+  } catch (error) {
+    showMessage(`Error applying changes: ${error.message}`, "error");
+  } finally {
+    setLoading(false);
+  }
 }
 
 function updateDirtyState() {
-  const count = Object.keys(changedValues()).length;
-  byId("dirtyState").textContent =
-    count === 0 ? "No changes" : `${count} unsaved change${count === 1 ? "" : "s"}`;
-  byId("applyButton").disabled = count === 0;
-}
-
-async function validate(showResult = true) {
-  const result = await api("/admin/api/config/validate", {
-    method: "POST",
-    body: JSON.stringify({ values: changedValues() }),
-  });
-  if (showResult) {
-    showValidationResult(result);
+  const hasChanges = state.pendingChanges.size > 0;
+  const dirtyState = byId("dirtyState");
+  if (dirtyState) {
+    dirtyState.textContent = hasChanges ? "Unsaved changes" : "No changes";
+    dirtyState.style.color = hasChanges ? "var(--warn)" : "var(--ok)";
   }
-  return result;
+  updateApplyButtonState();
 }
 
-function showValidationResult(result) {
-  if (result.valid) {
-    showMessage("Config shape is valid", "ok");
-  } else {
-    showMessage(result.errors.join("; "), "error");
+function updateApplyButtonState() {
+  const applyButton = byId("applyButton");
+  if (applyButton) {
+    applyButton.disabled = state.isLoading || state.pendingChanges.size === 0;
   }
 }
 
-async function apply() {
-  const result = await api("/admin/api/config/apply", {
-    method: "POST",
-    body: JSON.stringify({ values: changedValues() }),
-  });
-  if (!result.applied) {
-    showValidationResult(result);
-    return;
-  }
-  const restart = result.restart || {};
-  if (restart.required && restart.automatic) {
-    showMessage("Applied. Restarting server...", "ok");
-    byId("applyButton").disabled = true;
+function showMessage(message, type = "info") {
+  const messageArea = byId("messageArea");
+  if (!messageArea) return;
+
+  messageArea.textContent = message;
+  messageArea.className = `message-area ${type}`;
+
+  // Auto-clear success/error messages after 5 seconds
+  if (type === "ok" || type === "error") {
     setTimeout(() => {
-      window.location.href = restart.admin_url || "/admin";
-    }, 1600);
-    return;
+      if (messageArea.textContent === message) {
+        messageArea.textContent = "";
+        messageArea.className = "message-area";
+      }
+    }, 5000);
   }
-  const pending = restart.required ? restart.fields || [] : result.pending_fields || [];
-  await load();
-  showMessage(
-    pending.length
-      ? `Applied. Restart fcc-server to use: ${pending.join(", ")}`
-      : "Applied",
-    "ok",
-  );
 }
 
 async function refreshLocalStatus() {
-  const result = await api("/admin/api/providers/local-status");
-  result.providers.forEach((provider) => {
-    state.localStatus.set(provider.provider_id, provider);
-    const meta = provider.status_code
-      ? `${provider.base_url} returned HTTP ${provider.status_code}`
-      : provider.base_url;
-    updateProviderCard(provider.provider_id, provider.status, provider.label, meta);
-  });
-}
-
-async function testProvider(providerId, button) {
-  const original = button.textContent;
-  button.disabled = true;
-  button.textContent = "Testing";
   try {
-    const result = await api(`/admin/api/providers/${providerId}/test`, {
-      method: "POST",
-      body: "{}",
+    const result = await api("/admin/api/providers/local-status");
+    result.providers.forEach((provider) => {
+      state.localStatus.set(provider.provider_id, provider);
+      const meta = provider.status_code
+        ? `${provider.base_url} returned HTTP ${provider.status_code}`
+        : provider.base_url;
+      updateProviderCard(provider.provider_id, provider.status, provider.label, meta);
     });
-    if (result.ok) {
-      updateProviderCard(
-        providerId,
-        "reachable",
-        `${result.models.length} models`,
-        result.models.slice(0, 3).join(", ") || "No models returned",
-      );
-      state.modelOptions = Array.from(
-        new Set([
-          ...state.modelOptions,
-          ...result.models.map((model) => `${providerId}/${model}`),
-        ]),
-      ).sort();
-      syncModelDatalist();
-    } else {
-      updateProviderCard(providerId, "offline", result.error_type, result.error_type);
-    }
-  } finally {
-    button.disabled = false;
-    button.textContent = original;
+  } catch (error) {
+    console.warn("Failed to refresh local status:", error);
   }
 }
 
-function syncModelDatalist() {
-  let datalist = byId("model-options");
-  if (!datalist) {
-    datalist = document.createElement("datalist");
-    datalist.id = "model-options";
-    document.body.appendChild(datalist);
+// Add CSS for toggle password button
+const style = document.createElement('style');
+style.textContent = `
+  .toggle-password:hover {
+    background: var(--panel-strong);
+    color: var(--text-strong);
   }
-  datalist.innerHTML = "";
-  state.modelOptions.forEach((model) => datalist.appendChild(option(model, model)));
-}
 
-function showMessage(message, kind = "") {
-  const area = byId("messageArea");
-  area.textContent = message;
-  area.className = `message-area ${kind}`.trim();
-}
+  .toggle-password:active {
+    transform: scale(0.95);
+  }
 
-byId("validateButton").addEventListener("click", () => validate(true));
-byId("applyButton").addEventListener("click", apply);
+  .spinner {
+    display: inline-block;
+    width: 16px;
+    height: 16px;
+    border: 2px solid currentColor;
+    border-top-color: transparent;
+    border-radius: 50%;
+    animation: spin 0.8s linear infinite;
+    margin-left: 8px;
+  }
 
-load().catch((error) => {
-  showMessage(error.message, "error");
+  @keyframes spin {
+    to { transform: rotate(360deg); }
+  }
+
+  .field > *:first-child:hover ~ input,
+  .field > *:first-child:hover ~ .field > input {
+    box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.2);
+  }
+
+  .field > *:first-child:focus-within + input,
+  .field > *:first-child:focus-within + .field > input {
+    box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.2);
+  }
+`;
+document.head.appendChild(style);
+
+// Event listeners for apply button
+byId("applyButton")?.addEventListener("click", applyChanges);
+byId("validateButton")?.addEventListener("click", () => validate(true));
+
+// Initialize the app when DOM is loaded
+document.addEventListener("DOMContentLoaded", load);
+
+// Refresh status periodically
+setInterval(refreshLocalStatus, 30000); // Every 30 seconds
+
+// Handle visibility change to pause/resume updates
+document.addEventListener("visibilitychange", () => {
+  if (document.hidden) {
+    // Pause when tab is not visible
+  } else {
+    // Resume when tab becomes visible
+    refreshLocalStatus();
+  }
 });
