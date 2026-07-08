@@ -10,7 +10,7 @@ readme = "README.md"
 requires-python = ">=3.14.0"
 dependencies = [
     "fastapi[standard]>=0.139.0",
-    "uvicorn>=0.50.0",
+    "uvicorn>=0.51.0",
     "httpx[socks]>=0.28.1",
     "markdown-it-py>=4.2.0",
     "pydantic>=2.13.4",
@@ -34,7 +34,7 @@ fcc-codex = "cli.launchers.codex:launch"
 
 [project.optional-dependencies]
 voice = [
-    "grpcio>=1.81.1",
+    "grpcio>=1.82.1",
     "grpcio-tools>=1.81.1",
     "nvidia-riva-client>=2.26.0",
 ]
@@ -67,7 +67,7 @@ dev = [
     "pytest>=9.1.1",
     "pytest-asyncio>=1.4.0",
     "pytest-cov>=7.1.0",
-    "ty>=0.0.56",
+    "ty>=0.0.57",
     "ruff>=0.15.20",
     "pytest-xdist>=3.8.0",
 ]
